@@ -7,11 +7,10 @@ const themeToggleButton = document.getElementById("themeToggler");
 const clearChatButton = document.getElementById("deleteButton");
 const promptInput = document.querySelector(".prompt__form-input");
 
-let currentUserMessage = null;
 let isGeneratingResponse = false;
+let chatHistory = [];
 
-const GOOGLE_API_KEY = "AIzaSyAvnZhqqA1WpNBQyfWJS1C9L3GD804yrjE";
-const API_REQUEST_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${GOOGLE_API_KEY}`;
+const BACKEND_API_URL = "https://gemini-backend-bq2m.onrender.com/chat";
 
 
 const createChatMessageElement = (htmlContent, ...cssClasses) => {
@@ -21,65 +20,63 @@ const createChatMessageElement = (htmlContent, ...cssClasses) => {
     return messageElement;
 };
 
-const showTypingEffect = (rawText, htmlText, messageElement, incomingMessageElement, skipEffect = false) => {
-    const copyIconElement = incomingMessageElement.querySelector(".message__icon");
-    copyIconElement.classList.add("hide");
+const showTypingEffect = (rawText, messageElement, incomingMessageElement) => {
+    const plainText = rawText.replace(/<[^>]+>/g, "");
+    let index = 0;
+    messageElement.textContent = "";
 
-    if (skipEffect) {
-        messageElement.innerHTML = htmlText;
-        hljs.highlightAll();
-        addCopyButtonToCodeBlocks();
-        copyIconElement.classList.remove("hide");
-        isGeneratingResponse = false;
-        return;
-    }
-
-    let wordIndex = 0;
     const typingInterval = setInterval(() => {
-        messageElement.innerHTML = marked.parse(rawText.split(' ').slice(0, ++wordIndex).join(' '));
-        chatHistoryContainer.scrollTo(0, chatHistoryContainer.scrollHeight);
-
-        if (wordIndex >= rawText.split(' ').length) {
+        if (index < plainText.length) {
+            messageElement.textContent += plainText.charAt(index);
+            index++;
+        } else {
             clearInterval(typingInterval);
-            isGeneratingResponse = false;
-            messageElement.innerHTML = htmlText;
+
+            // tayyor HTMLni qo‘yish
+            messageElement.innerHTML = rawText;
+
             hljs.highlightAll();
             addCopyButtonToCodeBlocks();
-            copyIconElement.classList.remove("hide");
+            incomingMessageElement.querySelector(".message__icon").classList.remove("hide");
+            isGeneratingResponse = false;
+
+            // 🚀 Javob tugagach majburiy eng pastga tushirish
+            chatHistoryContainer.scrollTo({
+                top: chatHistoryContainer.scrollHeight,
+                behavior: "smooth"
+            });
         }
-    }, 75);
+    }, 5);
 };
 
 const requestApiResponse = async (incomingMessageElement) => {
     const messageTextElement = incomingMessageElement.querySelector(".message__text");
+    const currentUserMessage = chatHistory[chatHistory.length - 1].parts[0].text;
 
     try {
-        const response = await fetch(API_REQUEST_URL, {
+        const response = await fetch(BACKEND_API_URL, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-                contents: [{ parts: [{ text: currentUserMessage }] }]
+                history: chatHistory.slice(0, -1),
+                message: currentUserMessage
             }),
         });
 
-
         const responseData = await response.json();
-        if (!response.ok) throw new Error(responseData?.error?.message || "API request failed");
+        if (!response.ok) throw new Error(responseData.error || "API so'rovida xatolik");
 
-        const responseText = responseData?.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (!responseText) throw new Error("Invalid API response format.");
+        const botResponse = responseData.response;
 
-        const parsedApiResponse = marked.parse(responseText);
-        showTypingEffect(responseText, parsedApiResponse, messageTextElement, incomingMessageElement);
+        chatHistory.push({ role: "model", parts: [{ text: botResponse }] });
 
-        let savedConversations = JSON.parse(localStorage.getItem("saved-api-chats")) || [];
-        savedConversations.push({ userMessage: currentUserMessage, apiResponse: responseData });
-        localStorage.setItem("saved-api-chats", JSON.stringify(savedConversations));
+        showTypingEffect(botResponse, messageTextElement, incomingMessageElement);
+        saveChatToLocalStorage();
 
     } catch (error) {
-        console.error("API Error:", error);
+        console.error("Backend Error:", error);
         isGeneratingResponse = false;
-        messageTextElement.innerText = `Error: ${error.message}`;
+        messageTextElement.innerText = `Xatolik: ${error.message}`;
         messageTextElement.closest(".message").classList.add("message--error");
     } finally {
         incomingMessageElement.querySelector(".message__loading-indicator").remove();
@@ -87,8 +84,8 @@ const requestApiResponse = async (incomingMessageElement) => {
 };
 
 const addCopyButtonToCodeBlocks = () => {
-    const codeBlocks = document.querySelectorAll('pre');
-    codeBlocks.forEach((block) => {
+    document.querySelectorAll('pre').forEach((block) => {
+        if (block.querySelector('.code__copy-btn')) return;
         const codeElement = block.querySelector('code');
         const language = [...codeElement.classList].find(cls => cls.startsWith('language-'))?.replace('language-', '') || 'text';
 
@@ -98,19 +95,14 @@ const addCopyButtonToCodeBlocks = () => {
         block.appendChild(languageLabel);
 
         const copyButton = document.createElement('button');
-        // FIX: Corrected icon classes and closing tag
         copyButton.innerHTML = `<i class='bx bx-copy'></i>`;
         copyButton.classList.add('code__copy-btn');
         block.appendChild(copyButton);
 
         copyButton.addEventListener('click', () => {
             navigator.clipboard.writeText(codeElement.innerText).then(() => {
-                // FIX: Corrected icon class
                 copyButton.innerHTML = `<i class='bx bx-check'></i>`;
                 setTimeout(() => copyButton.innerHTML = `<i class='bx bx-copy'></i>`, 2000);
-            }).catch(err => {
-                console.error("Copy failed:", err);
-                alert("Unable to copy text!");
             });
         });
     });
@@ -129,11 +121,9 @@ const displayLoadingAnimation = () => {
         </div>
         <span onClick="copyMessageToClipboard(this)" class="message__icon hide">
             <i class='bx bx-copy-alt'></i>
-        </span>
-    `;
+        </span>`;
     const loadingMessageElement = createChatMessageElement(loadingHtml, "message--incoming", "message--loading");
     chatHistoryContainer.appendChild(loadingMessageElement);
-    chatHistoryContainer.scrollTo(0, chatHistoryContainer.scrollHeight);
 
     requestApiResponse(loadingMessageElement);
 };
@@ -141,75 +131,74 @@ const displayLoadingAnimation = () => {
 const copyMessageToClipboard = (copyButton) => {
     const messageContent = copyButton.parentElement.querySelector(".message__text").innerText;
     navigator.clipboard.writeText(messageContent).then(() => {
-        // FIX: Corrected typo and icon tag
         copyButton.innerHTML = `<i class='bx bx-check'></i>`;
         setTimeout(() => copyButton.innerHTML = `<i class='bx bx-copy-alt'></i>`, 1000);
     });
 };
 
 const handleOutgoingMessage = () => {
-    currentUserMessage = promptInput.value.trim();
+    const currentUserMessage = promptInput.value.trim();
     if (!currentUserMessage || isGeneratingResponse) return;
 
     isGeneratingResponse = true;
     promptInput.value = "";
 
+    chatHistory.push({ role: "user", parts: [{ text: currentUserMessage }] });
+
     const outgoingMessageHtml = `
     <div class="message__content">
         <img class="message__avatar" src="https://placehold.co/40x40/777/FFF?text=U" alt="User avatar">
-        <p class="message__text"></p>
-    </div>
-    `;
-
+        <p class="message__text">${currentUserMessage}</p>
+    </div>`;
     const outgoingMessageElement = createChatMessageElement(outgoingMessageHtml, "message--outgoing");
-    outgoingMessageElement.querySelector(".message__text").textContent = currentUserMessage;
     chatHistoryContainer.appendChild(outgoingMessageElement);
-    chatHistoryContainer.scrollTo(0, chatHistoryContainer.scrollHeight);
 
     header.classList.add("hide-header");
     setTimeout(displayLoadingAnimation, 300);
 };
 
-const loadSavedChatHistory = () => {
-    const savedConversations = JSON.parse(localStorage.getItem("saved-api-chats")) || [];
-    const isLightTheme = localStorage.getItem("themeColor") === "light_mode";
+const saveChatToLocalStorage = () => {
+    localStorage.setItem("gemini-chat-history", JSON.stringify(chatHistory));
+};
 
-    document.body.classList.toggle("light_mode", isLightTheme);
-    themeToggleButton.innerHTML = isLightTheme
-        ? '<i class="bx bx-moon"></i>'
-        : '<i class="bx bx-sun"></i>';
+const loadChatFromLocalStorage = () => {
+    const savedHistory = JSON.parse(localStorage.getItem("gemini-chat-history")) || [];
+    chatHistory = savedHistory;
 
-    chatHistoryContainer.innerHTML = '';
-    if (!savedConversations.length) return;
+    if (!chatHistory.length) return;
 
-    savedConversations.forEach(conversation => {
-        const userMessageHtml = `
-        <div class="message__content">
-            <img class="message__avatar" src="https://placehold.co/40x40/777/FFF?text=U" alt="User avatar">
-            <p class="message__text">${conversation.userMessage}</p>
-        </div>`;
-        const outgoingMessageElement = createChatMessageElement(userMessageHtml, "message--outgoing");
-        chatHistoryContainer.appendChild(outgoingMessageElement);
+    chatHistory.forEach(turn => {
+        const messageClass = turn.role === 'user' ? 'message--outgoing' : 'message--incoming';
+        const avatarText = turn.role === 'user' ? 'U' : 'G';
+        const avatarBg = turn.role === 'user' ? '777' : '4a90e2';
+        const parsedText = marked.parse(turn.parts[0].text);
 
-        const responseText = conversation.apiResponse?.candidates?.[0]?.content?.parts?.[0]?.text;
-        const parsedApiResponse = marked.parse(responseText);
-
-        const responseHtml = `
+        const messageHtml = `
             <div class="message__content">
-                <img class="message__avatar" src="https://placehold.co/40x40/4a90e2/FFFFFF?text=G" alt="Gemini avatar">
-                <p class="message__text">${parsedApiResponse}</p>
+                <img class="message__avatar" src="https://placehold.co/40x40/${avatarBg}/FFF?text=${avatarText}" alt="${turn.role} avatar">
+                <p class="message__text">${parsedText}</p>
             </div>
-            <span onClick="copyMessageToClipboard(this)" class="message__icon">
-                <i class='bx bx-copy-alt'></i>
-            </span>`;
-        const incomingMessageElement = createChatMessageElement(responseHtml, "message--incoming");
-        chatHistoryContainer.appendChild(incomingMessageElement);
+            ${turn.role === 'model' ? `<span onClick="copyMessageToClipboard(this)" class="message__icon"><i class='bx bx-copy-alt'></i></span>` : ''}
+        `;
+        const messageElement = createChatMessageElement(messageHtml, messageClass);
+        chatHistoryContainer.appendChild(messageElement);
     });
 
     hljs.highlightAll();
     addCopyButtonToCodeBlocks();
     header.classList.add("hide-header");
-    chatHistoryContainer.scrollTo(0, chatHistoryContainer.scrollHeight);
+
+    // faqat eski chatni yuklab bo‘lgandan keyin ham pastga tushirish
+    chatHistoryContainer.scrollTo({
+        top: chatHistoryContainer.scrollHeight,
+        behavior: "smooth"
+    });
+};
+
+const loadTheme = () => {
+    const isLightTheme = localStorage.getItem("themeColor") === "light_mode";
+    document.body.classList.toggle("light_mode", isLightTheme);
+    themeToggleButton.querySelector("i").className = isLightTheme ? "bx bx-moon" : "bx bx-sun";
 };
 
 themeToggleButton.addEventListener('click', () => {
@@ -219,11 +208,11 @@ themeToggleButton.addEventListener('click', () => {
 });
 
 clearChatButton.addEventListener('click', () => {
-    if (confirm("Are you sure you want to delete all chat history?")) {
-        localStorage.removeItem("saved-api-chats");
+    if (confirm("Haqiqatan ham barcha suhbat tarixini o'chirmoqchimisiz?")) {
+        localStorage.removeItem("gemini-chat-history");
         chatHistoryContainer.innerHTML = "";
         header.classList.remove("hide-header");
-        currentUserMessage = null;
+        chatHistory = [];
         isGeneratingResponse = false;
     }
 });
@@ -240,4 +229,5 @@ messageForm.addEventListener('submit', (e) => {
     handleOutgoingMessage();
 });
 
-loadSavedChatHistory();
+loadTheme();
+loadChatFromLocalStorage();
